@@ -26,41 +26,29 @@ from .TransportComponent import TransportComponent
 from _Framework.InputControlElement import MIDI_NOTE_TYPE
 from _Framework.ButtonElement import ButtonElement
 
-# SESSION_WIDTH = 8
-SESSION_WIDTH = 4
+SESSION_WIDTH = 8
 SESSION_HEIGHT = 5
-# MIXER_SIZE = 8
-MIXER_SIZE = 4
+MIXER_SIZE = 8
 FALLBACK_CONTROL_OWNER_PRIORITY = (-1)
 TAG='[MY_APC40]'
-
-logger = None
-
-def log(msg):
-    global logger
-    if logger is not None:
-        logger(msg)
 
 def make_on_off_button(channel, identifier, *a, **k):
     return ButtonElement(False, MIDI_NOTE_TYPE, channel, identifier, *a, **k)
 
-class APC40_CUSTOM(APC):
+class APC40(APC):
     def __init__(self, *a, **k):
-        super(APC40_CUSTOM, self).__init__(*a, **k)
+        super(APC40, self).__init__(*a, **k)
         self._color_skin = make_biled_skin()
         self._default_skin = make_default_skin()
         with self.component_guard():
-            global logger
-            logger = self.log_message
-            log('\n\n HELLO MUSIC WORLD \n\n')
-            
+            self.log_message('\n\n HELLO MUSIC WORLD \n\n')
             self._create_controls()
             self._create_session()
             self._create_mixer()
             self._create_device()
             self._create_detail_view_control()
             self._create_transport()
-            # self._create_global_control()
+            self._create_global_control()
             self._create_fallback_control_owner()
             self._session.set_mixer(self._mixer)
             self.set_highlighting_session_component(self._session)
@@ -68,21 +56,11 @@ class APC40_CUSTOM(APC):
             for component in self.components:
                 component.set_enabled(False)
 
-            self._beat = 0
-            self._metronome_led_buttons = []
-            self._performance_pads = []
-            self._create_performance_pads()
-            self._create_metronome_led_buttons()
-            self.song().add_current_song_time_listener(self.song_time_listener)
-            self.song().add_is_playing_listener(self.song_is_playing_listener)
-            # Not sure why, but colors initialization works only with a delay > 5 (maybe because the first refresh_state() has a delay of 5??)
-            self.schedule_message(10, self._init_performance_pads_colors)
-
     def _with_shift(self, button):
         return ComboElement(button, modifiers=[self._shift_button])
 
     def _create_controls(self):
-        log(f'{TAG} INITIALIZING CONTROLS...')
+        self.log_message(f'{TAG} INITIALIZING CONTROLS...')
         make_color_button = partial(make_button, skin=self._color_skin)
         # self = partial(make_button, skin=self._color_skin)
         self._shift_button = make_button(0, 98, resource_type=PrioritizedResource, name='Shift_Button')
@@ -93,10 +71,6 @@ class APC40_CUSTOM(APC):
         self._session_matrix = ButtonMatrixElement(name='Button_Matrix')
         self._scene_launch_buttons_raw = [make_color_button(0, index + 82, name=f'Scene_%d_Launch_Button{index}') for index in range(SESSION_HEIGHT)]
         self._track_stop_buttons = [make_color_button(index, 52, name='Track_%d_Stop_Button' % index) for index in range(SESSION_WIDTH)]
-
-        # Used for metronome beat led, instead of stop buttons ^_^
-        self._my_metronome_buttons = [make_color_button(index, 52, name=f'Track_{index}_Beat_Button') for index in range(4, 8)]
-
         self._stop_all_button = make_button(0, 81, name='Stop_All_Clips_Button')
         # self._matrix_rows_raw = [make_color_button(track_index, scene_index + 53, name='%d_Clip_%d_Button' % (track_index, scene_index)) for track_index in range(SESSION_HEIGHT)]
 
@@ -105,7 +79,7 @@ class APC40_CUSTOM(APC):
                 make_color_button(
                     track_index,
                     scene_index + 53,
-                    name=f'{scene_index}_Clip_{track_index}_Button',
+                    name="%d_Clip_%d_Button" % (scene_index, track_index),
                 )
                 for track_index in range(SESSION_WIDTH)
             ]
@@ -138,11 +112,11 @@ class APC40_CUSTOM(APC):
 
         for index in range(8):
             # self._device_bank_buttons.append(make_color_button(0, 58, 0, name=bank_button_labels[index]))
-            self._device_bank_buttons.append(make_button(0, 58 + index, name=bank_button_labels[index]))
-            # encoder_name = 'Device_Control_%d' % index
-            # # ringed_encoder = make_ring_encoder(16 * index, 24 * index, name=encoder_name)
-            # ringed_encoder = make_ring_encoder(16 + index, 24 + index, name=encoder_name)
-            # self._device_param_controls_raw.append(ringed_encoder)
+            self._device_bank_buttons.append(make_color_button(0, 58 + index, name=bank_button_labels[index]))
+            encoder_name = 'Device_Control_%d' % index
+            # ringed_encoder = make_ring_encoder(16 * index, 24 * index, name=encoder_name)
+            ringed_encoder = make_ring_encoder(16 + index, 24 + index, name=encoder_name)
+            self._device_param_controls_raw.append(ringed_encoder)
 
         self._play_button = make_button(0, 91, name='Play_Button')
         self._stop_button = make_button(0, 92, name='Stop_Button')
@@ -152,11 +126,11 @@ class APC40_CUSTOM(APC):
         self._tap_tempo_button = make_button(0, 99, name='Tap_Tempo_Button')
         self._global_bank_buttons = []
         self._global_param_controls = []
-        # for index in range(MIXER_SIZE):
-        #     encoder_name = 'Track_Control_%d' % index
-        #     # ringed_encoder = make_ring_encoder(48 * index, 56 * index, name=encoder_name)
-        #     ringed_encoder = make_ring_encoder(48 + index, 56 + index, name=encoder_name)
-        #     self._global_param_controls.append(ringed_encoder)
+        for index in range(8):
+            encoder_name = 'Track_Control_%d' % index
+            # ringed_encoder = make_ring_encoder(48 * index, 56 * index, name=encoder_name)
+            ringed_encoder = make_ring_encoder(48 + index, 56 + index, name=encoder_name)
+            self._global_param_controls.append(ringed_encoder)
         self._global_bank_buttons = [make_on_off_button(0, 87 + index, name=name) for index, name in enumerate(('Pan_Button', 'Send_A_Button', 'Send_B_Button', 'Send_C_Button'))]        
         self._device_clip_toggle_button = self._device_bank_buttons[0]
         self._device_on_off_button = self._device_bank_buttons[1]
@@ -181,13 +155,13 @@ class APC40_CUSTOM(APC):
         self._shifted_matrix = ButtonMatrixElement(rows=recursive_map(self._with_shift, self._matrix_rows_raw))
         self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])
 
-        log(f'{TAG} INITIALIZING CONTROLS DONE')
+        self.log_message(f'{TAG} INITIALIZING CONTROLS DONE')
 
     def _create_session(self):
-        log(f'{TAG} INITIALIZING SESSION...')
+        self.log_message(f'{TAG} INITIALIZING SESSION...')
         self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, scene_launch_buttons=self._scene_launch_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))
         self._session_zoom = SessionZoomingComponent(self._session, name='Session_Overview', enable_skinning=True, is_enabled=False, layer=Layer(button_matrix=self._shifted_matrix, nav_up_button=self._with_shift(self._up_button), nav_down_button=self._with_shift(self._down_button), nav_left_button=self._with_shift(self._left_button), nav_right_button=self._with_shift(self._right_button), scene_bank_buttons=self._shifted_scene_buttons))
-        log(f'{TAG} INITIALIZING SESSION DONE')
+        self.log_message(f'{TAG} INITIALIZING SESSION DONE')
 
     def _create_mixer(self):
         self._mixer = MixerComponent(MIXER_SIZE, auto_name=True, is_enabled=False, invert_mute_feedback=True, layer=Layer(volume_controls=self._volume_controls, arm_buttons=self._arm_buttons, solo_buttons=self._solo_buttons, mute_buttons=self._mute_buttons, track_select_buttons=self._select_buttons, shift_button=self._shift_button, crossfader_control=self._crossfader_control, prehear_volume_control=self._prehear_control))
@@ -239,78 +213,3 @@ class APC40_CUSTOM(APC):
 
     def _product_model_id_byte(self):
         return 115
-
-    # --------------------------------------------------------------------
-
-    def _empty_listener(self, o):
-        pass
-
-    def _create_metronome_led_buttons(self):
-        for index in range(4, 8):            
-            button = ButtonElement(
-                is_momentary=False,
-                msg_type=MIDI_NOTE_TYPE,
-                channel=index, # midi channel
-                identifier=52, # midi note
-                name=f'Metronome_Led_Button_{index}',
-                skin=self._color_skin)
-
-            # Apparently if we don't add a listener, we can't change the color of the button...Another mystery
-            button.add_value_listener(lambda value, btn=button: self._empty_listener(btn))
-            self._metronome_led_buttons.append(button)
-
-    def song_time_listener(self):
-        prev_beat = self._beat
-
-        # the sub_division ticks counts from 1 to 4 over a single beat
-        # https://docs.cycling74.com/legacy/max8/vignettes/live_object_model#live_obj_anchor_Song        
-        self._beat = self.song().get_current_beats_song_time().beats
-
-        if prev_beat != self._beat:            
-            if self._beat == 1:
-                self._metronome_led_buttons[3].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[0].set_light('Session.ClipStarted')            
-            elif self._beat == 2:
-                self._metronome_led_buttons[0].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[1].set_light('Session.ClipStarted')
-            elif self._beat == 3:
-                self._metronome_led_buttons[1].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[2].set_light('Session.ClipStarted')
-            elif self._beat == 4:
-                self._metronome_led_buttons[2].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[3].set_light('Session.ClipStarted')
-
-    def song_is_playing_listener(self):
-        if not self.song().is_playing:
-            for button in self._metronome_led_buttons:
-                button.set_light('Session.ClipEmpty')
-
-    def _create_performance_pads(self):                
-        for scene_index in range(SESSION_HEIGHT):
-            row = []
-            for track_index in range(4, 8):                
-                button = ButtonElement(
-                    is_momentary=True,
-                    msg_type=MIDI_NOTE_TYPE,
-                    channel=track_index, # midi channel
-                    identifier=scene_index + 53, # midi note
-                    name=f'Performance_Pad_{scene_index}_{track_index}',
-                    skin=self._color_skin)
-                                
-                idle_color = 'Session.ClipRecording' # red color
-                button.add_value_listener(lambda value, btn=button, idle_color=idle_color: self.on_pad_value(value, btn, idle_color))
-                row.append(button)
-            self._performance_pads.append(row)                      
-    
-    def on_pad_value(self, value, button, idle_color):        
-        if value:
-            button.set_light('Session.ClipStarted') # green when pushed
-        else:
-            button.set_light(idle_color) # reset to the idle color when released
-
-    def _init_performance_pads_colors(self):        
-        if self._performance_pads:
-            for scene_index in range(SESSION_HEIGHT):
-                for track_index in range(4):
-                    button = self._performance_pads[scene_index][track_index]
-                    button.set_light('Session.ClipRecording')
