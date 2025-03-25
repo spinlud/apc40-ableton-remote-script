@@ -261,9 +261,8 @@ class APC40_CUSTOM(APC):
 
     def song_time_listener(self):
         prev_beat = self._beat
-
-        # the sub_division ticks counts from 1 to 4 over a single beat
-        # https://docs.cycling74.com/legacy/max8/vignettes/live_object_model#live_obj_anchor_Song        
+        
+        # Documentation at https://nsuspray.github.io/Live_API_Doc/11.0.0.xml
         self._beat = self.song().get_current_beats_song_time().beats
 
         if prev_beat != self._beat:            
