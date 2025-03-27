@@ -74,9 +74,12 @@ class APC40_CUSTOM(APC):
             self._create_performance_pads()
             self._create_metronome_led_buttons()
             self.song().add_current_song_time_listener(self.song_time_listener)
-            self.song().add_is_playing_listener(self.song_is_playing_listener)
+            self.song().add_is_playing_listener(self.song_is_playing_listener)            
+            self.deck_load_buttons()
+            self.deck_clear_buttons()
+            self.init_bpm_buttons()
             # Not sure why, but colors initialization works only with a delay > 5 (maybe because the first refresh_state() has a delay of 5??)
-            self.schedule_message(10, self._init_performance_pads_colors)
+            self.schedule_message(12, self._init_performance_pads_colors)
 
     def _with_shift(self, button):
         return ComboElement(button, modifiers=[self._shift_button])
@@ -117,13 +120,13 @@ class APC40_CUSTOM(APC):
         self._selected_slot_launch_button = make_pedal_button(67, name='Selected_Slot_Launch_Button')
         self._selected_scene_launch_button = make_pedal_button(64, name='Selected_Scene_Launch_Button')
         self._volume_controls = []
-        self._arm_buttons = []
+        # self._arm_buttons = []
         self._solo_buttons = []
         self._mute_buttons = []
         self._select_buttons = []
         for index in range(MIXER_SIZE):
             self._volume_controls.append(make_slider(index, 7, name=f'{index}_Volume_Control'))
-            self._arm_buttons.append(make_color_button(index, 48, name=f'{index}_Arm_Button'))
+            # self._arm_buttons.append(make_color_button(index, 48, name=f'{index}_Arm_Button'))
             self._solo_buttons.append(make_color_button(index, 49, name=f'{index}_Solo_Button'))
             self._mute_buttons.append(make_color_button(index, 50, name=f'{index}_Mute_Button'))
             self._select_buttons.append(make_color_button(index, 51, name=f'{index}_Select_Button'))
@@ -147,8 +150,8 @@ class APC40_CUSTOM(APC):
         self._play_button = make_button(0, 91, name='Play_Button')
         self._stop_button = make_button(0, 92, name='Stop_Button')
         self._record_button = make_button(0, 93, name='Record_Button')
-        self._nudge_up_button = make_button(0, 100, name='Nudge_Up_Button')
-        self._nudge_down_button = make_button(0, 101, name='Nudge_Down_Button')
+        # self._nudge_up_button = make_button(0, 100, name='Nudge_Up_Button')
+        # self._nudge_down_button = make_button(0, 101, name='Nudge_Down_Button')
         self._tap_tempo_button = make_button(0, 99, name='Tap_Tempo_Button')
         self._global_bank_buttons = []
         self._global_param_controls = []
@@ -172,25 +175,25 @@ class APC40_CUSTOM(APC):
         self._scene_launch_buttons = wrap_matrix(self._scene_launch_buttons_raw)
         self._track_stop_buttons = wrap_matrix(self._track_stop_buttons)
         self._volume_controls = wrap_matrix(self._volume_controls)
-        self._arm_buttons = wrap_matrix(self._arm_buttons)
+        # self._arm_buttons = wrap_matrix(self._arm_buttons)
         self._solo_buttons = wrap_matrix(self._solo_buttons)
         self._mute_buttons = wrap_matrix(self._mute_buttons)
         self._select_buttons = wrap_matrix(self._select_buttons)
         self._device_param_controls = wrap_matrix(self._device_param_controls_raw)
-        self._device_bank_buttons = wrap_matrix(self._device_bank_buttons, partial(DeviceBankButtonElement, modifiers=[self._shift_button]))
-        self._shifted_matrix = ButtonMatrixElement(rows=recursive_map(self._with_shift, self._matrix_rows_raw))
-        self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])
-
+        # self._device_bank_buttons = wrap_matrix(self._device_bank_buttons, partial(DeviceBankButtonElement, modifiers=[self._shift_button]))
+        self._device_bank_buttons = wrap_matrix(self._device_bank_buttons, partial(DeviceBankButtonElement, modifiers=[]))
+        # self._shifted_matrix = ButtonMatrixElement(rows=recursive_map(self._with_shift, self._matrix_rows_raw))
+        # self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])
         log(f'{TAG} INITIALIZING CONTROLS DONE')
 
-    def _create_session(self):
-        log(f'{TAG} INITIALIZING SESSION...')
+    def _create_session(self):        
         self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, scene_launch_buttons=self._scene_launch_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))
-        self._session_zoom = SessionZoomingComponent(self._session, name='Session_Overview', enable_skinning=True, is_enabled=False, layer=Layer(button_matrix=self._shifted_matrix, nav_up_button=self._with_shift(self._up_button), nav_down_button=self._with_shift(self._down_button), nav_left_button=self._with_shift(self._left_button), nav_right_button=self._with_shift(self._right_button), scene_bank_buttons=self._shifted_scene_buttons))
+        # self._session_zoom = SessionZoomingComponent(self._session, name='Session_Overview', enable_skinning=True, is_enabled=False, layer=Layer(button_matrix=self._shifted_matrix, nav_up_button=self._with_shift(self._up_button), nav_down_button=self._with_shift(self._down_button), nav_left_button=self._with_shift(self._left_button), nav_right_button=self._with_shift(self._right_button), scene_bank_buttons=self._shifted_scene_buttons))
         log(f'{TAG} INITIALIZING SESSION DONE')
 
     def _create_mixer(self):
-        self._mixer = MixerComponent(MIXER_SIZE, auto_name=True, is_enabled=False, invert_mute_feedback=True, layer=Layer(volume_controls=self._volume_controls, arm_buttons=self._arm_buttons, solo_buttons=self._solo_buttons, mute_buttons=self._mute_buttons, track_select_buttons=self._select_buttons, shift_button=self._shift_button, crossfader_control=self._crossfader_control, prehear_volume_control=self._prehear_control))
+        # self._mixer = MixerComponent(MIXER_SIZE, auto_name=True, is_enabled=False, invert_mute_feedback=True, layer=Layer(volume_controls=self._volume_controls, arm_buttons=self._arm_buttons, solo_buttons=self._solo_buttons, mute_buttons=self._mute_buttons, track_select_buttons=self._select_buttons, shift_button=self._shift_button, crossfader_control=self._crossfader_control, prehear_volume_control=self._prehear_control))
+        self._mixer = MixerComponent(MIXER_SIZE, auto_name=True, is_enabled=False, invert_mute_feedback=True, layer=Layer(volume_controls=self._volume_controls, solo_buttons=self._solo_buttons, mute_buttons=self._mute_buttons, track_select_buttons=self._select_buttons, shift_button=self._shift_button, crossfader_control=self._crossfader_control))
         self._mixer.master_strip().layer = Layer(volume_control=self._master_volume_control, select_button=self._master_select_button)
 
     def _create_device(self):
@@ -199,10 +202,12 @@ class APC40_CUSTOM(APC):
         self._device.set_parameter_controls(tuple(self._device_param_controls_raw))
 
     def _create_detail_view_control(self):
-        self._detail_view_toggler = DetailViewCntrlComponent(name='Detail_View_Control', is_enabled=False, layer=Layer(device_clip_toggle_button=self._device_clip_toggle_button, detail_toggle_button=self._detail_toggle_button, device_nav_left_button=self._detail_left_button, device_nav_right_button=self._detail_right_button))
+        # self._detail_view_toggler = DetailViewCntrlComponent(name='Detail_View_Control', is_enabled=False, layer=Layer(device_clip_toggle_button=self._device_clip_toggle_button, detail_toggle_button=self._detail_toggle_button, device_nav_left_button=self._detail_left_button, device_nav_right_button=self._detail_right_button))
+        self._detail_view_toggler = DetailViewCntrlComponent(name='Detail_View_Control', is_enabled=False, layer=Layer(device_clip_toggle_button=self._device_clip_toggle_button, detail_toggle_button=self._detail_toggle_button))
 
     def _create_transport(self):
-        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, nudge_up_button=self._nudge_up_button, nudge_down_button=self._nudge_down_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
+        # self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, nudge_up_button=self._nudge_up_button, nudge_down_button=self._nudge_down_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
+        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
         self._bank_button_translator = ChannelTranslationSelector(name='Bank_Button_Translations', is_enabled=False)
 
     def _create_global_control(self):
@@ -261,7 +266,7 @@ class APC40_CUSTOM(APC):
 
     def song_time_listener(self):
         prev_beat = self._beat
-        
+
         # Documentation at https://nsuspray.github.io/Live_API_Doc/11.0.0.xml
         self._beat = self.song().get_current_beats_song_time().beats
 
@@ -280,9 +285,12 @@ class APC40_CUSTOM(APC):
                 self._metronome_led_buttons[3].set_light('Session.ClipStarted')
 
     def song_is_playing_listener(self):
+        # Turn off metronome buttons on stop
         if not self.song().is_playing:
             for button in self._metronome_led_buttons:
                 button.set_light('Session.ClipEmpty')
+        # Just in case the pads colors have not been initialized, for whatever reason
+        self._init_performance_pads_colors()
 
     def _create_performance_pads(self):                
         for scene_index in range(SESSION_HEIGHT):
@@ -313,3 +321,104 @@ class APC40_CUSTOM(APC):
                 for track_index in range(4):
                     button = self._performance_pads[scene_index][track_index]
                     button.set_light('Session.ClipRecording')
+
+    def deck_clear_buttons(self):
+        self._deck_clear_buttons = []
+        for index in range(4, 8):            
+            btn = ButtonElement(
+                is_momentary=True,
+                msg_type=MIDI_NOTE_TYPE,
+                channel=index, # midi channel
+                identifier=48, # midi note
+                name=f'{index}_Deck_Clear_Button',
+                skin=self._color_skin)            
+            self._deck_clear_buttons.append(btn)
+
+        for i in range(4):
+            self._deck_clear_buttons[i].add_value_listener(lambda value, track_index=i: self.on_deck_clear(track_index))
+
+
+    def on_deck_clear(self, track_index):
+        view = self.application().view
+        view.focus_view('Session')
+
+        # Check if we are tying to access a track that doesn't exist
+        if len(self.song().tracks) - 1 < track_index:
+            return
+
+        track = self.song().tracks[track_index]
+
+        # Delete all clips in the track
+        for clip_slot in track.clip_slots:
+            if clip_slot.has_clip:
+                clip_slot.delete_clip()
+
+        
+        # Put focus on the first slot
+        first_clip_slot = track.clip_slots[0]
+        self.song().view.highlighted_clip_slot = first_clip_slot
+
+        # If the track header is selected, the focus will be on the track and not on the clip slot so we have to use this trick.
+        view.scroll_view(1, 'Session', False) # 1=scroll down
+        view.scroll_view(0, 'Session', False) # 0=scroll up
+
+    def deck_load_buttons(self):
+        self._deck_load_buttons = []
+        for index in range(4):            
+            btn = ButtonElement(
+                is_momentary=True,
+                msg_type=MIDI_NOTE_TYPE,
+                channel=index, # midi channel
+                identifier=48, # midi note
+                name=f'{index}_Deck_Load_Button',
+                skin=self._color_skin)           
+            self._deck_load_buttons.append(btn)
+
+        for i in range(4):
+            self._deck_load_buttons[i].add_value_listener(lambda value, track_index=i: self.on_deck_clear(track_index))
+
+
+    def on_deck_load(self, track_index):
+        view = self.application().view
+        view.focus_view('Session')
+
+        # Check if we are tying to access a track that doesn't exist
+        if len(self.song().tracks) - 1 < track_index:
+            return
+
+        track = self.song().tracks[track_index]
+        
+        # Put focus on the first slot
+        first_clip_slot = track.clip_slots[0]
+        self.song().view.highlighted_clip_slot = first_clip_slot
+
+        # If the track header is selected, the focus will be on the track and not on the clip slot so we have to use this trick.
+        view.scroll_view(1, 'Session', False) # 1=scroll down
+        view.scroll_view(0, 'Session', False) # 0=scroll up
+
+    def init_bpm_buttons(self):
+        nudge_up_button = ButtonElement(
+                is_momentary=True,
+                msg_type=MIDI_NOTE_TYPE,
+                channel=0, # midi channel
+                identifier=100, # midi note
+                name='Nudge_Up_Button')
+        
+        nudge_down_button = ButtonElement(
+                is_momentary=True,
+                msg_type=MIDI_NOTE_TYPE,
+                channel=0, # midi channel
+                identifier=101, # midi note
+                name='Nudge_Down_Button')
+
+        song = self.song()
+
+        # Add bpm change listeners (only on note_on message)
+        nudge_up_button.add_value_listener(lambda value: self.on_bmp_button(1) if value == 127 else None)
+        nudge_down_button.add_value_listener(lambda value: self.on_bmp_button(-1) if value == 127 else None)
+
+    def on_bmp_button(self, v):
+        song = self.song()
+        song.tempo += v
+
+
