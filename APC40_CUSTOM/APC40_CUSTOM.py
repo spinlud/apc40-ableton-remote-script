@@ -3,6 +3,7 @@
 # Bytecode version: 3.11a7e (3495)
 # Source timestamp: 2025-02-07 10:25:55 UTC (1738923955)
 
+import re
 from functools import partial
 from _Framework.ButtonMatrixElement import ButtonMatrixElement
 from _Framework.ChannelTranslationSelector import ChannelTranslationSelector
@@ -35,11 +36,12 @@ FALLBACK_CONTROL_OWNER_PRIORITY = (-1)
 TAG='[MY_APC40]'
 
 logger = None
+regex_pattern = re.compile(r'\[[^\]]*?(\d+(?![A-Za-z]))')
 
 def log(msg):
     global logger
     if logger is not None:
-        logger(msg)
+        logger(msg)        
 
 def make_on_off_button(channel, identifier, *a, **k):
     return ButtonElement(False, MIDI_NOTE_TYPE, channel, identifier, *a, **k)
@@ -78,6 +80,9 @@ class APC40_CUSTOM(APC):
             self.deck_load_buttons()
             self.deck_clear_buttons()
             self.init_bpm_buttons()
+            self.init_set_warp_mode_complex_buttons()
+            self.init_set_bpm_from_clip_buttons()
+
             # Not sure why, but colors initialization works only with a delay > 5 (maybe because the first refresh_state() has a delay of 5??)
             self.schedule_message(12, self._init_performance_pads_colors)
 
@@ -184,6 +189,8 @@ class APC40_CUSTOM(APC):
         self._device_bank_buttons = wrap_matrix(self._device_bank_buttons, partial(DeviceBankButtonElement, modifiers=[]))
         # self._shifted_matrix = ButtonMatrixElement(rows=recursive_map(self._with_shift, self._matrix_rows_raw))
         # self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])
+
+        self._tap_tempo_button.add_value_listener(lambda value: self.on_tap_tempo_button() if value == 127 else None)
         log(f'{TAG} INITIALIZING CONTROLS DONE')
 
     def _create_session(self):        
@@ -207,7 +214,7 @@ class APC40_CUSTOM(APC):
 
     def _create_transport(self):
         # self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, nudge_up_button=self._nudge_up_button, nudge_down_button=self._nudge_down_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
-        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
+        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
         self._bank_button_translator = ChannelTranslationSelector(name='Bank_Button_Translations', is_enabled=False)
 
     def _create_global_control(self):
@@ -421,4 +428,69 @@ class APC40_CUSTOM(APC):
         song = self.song()
         song.tempo += v
 
+    def on_tap_tempo_button(self):
+        song = self.song()        
+        song.view.follow_song = not song.view.follow_song
+
+    def init_set_warp_mode_complex_buttons(self):
+        btns = []
+        for i in range(4, 8):
+            b = ButtonElement(
+                    is_momentary=True,
+                    msg_type=MIDI_NOTE_TYPE,
+                    channel=i,
+                    identifier=49,
+                    name=f'Warp_Complex_Button_{i}')
+            btns.append(b)
+
+        for i in range(4):
+            btns[i].add_value_listener(lambda value, track_index=i: self.set_track_clips_warp_mode(track_index, 4) if value == 127 else None)
+
+    def init_set_bpm_from_clip_buttons(self):
+        btns = []
+        for i in range(4, 8):
+            b = ButtonElement(
+                    is_momentary=True,
+                    msg_type=MIDI_NOTE_TYPE,
+                    channel=i,
+                    identifier=50,
+                    name=f'Bpm_Clip_Button_{i}')
+            btns.append(b)
+
+        for i in range(4):
+            btns[i].add_value_listener(lambda value, track_index=i: self.set_bpm_from_playing_clip_name(track_index) if value == 127 else None)
+        
+
+    def set_bpm_from_playing_clip_name(self, track_index):
+        track = self.song().tracks[track_index]        
+
+        for clip_slot in track.clip_slots:
+            clip = clip_slot.clip
+            if clip:                
+                # try extract bpm from clip name
+                regex_result = regex_pattern.search(clip.name)                
+                if regex_result:
+                    target_bpm = int(regex_result.group(1))
+                    log(f'Changed BPM to {target_bpm} from clip {clip.name}')
+                    self.song().tempo = target_bpm                    
+                    break  
+
+        # Since we have matched song tempo, we can use repitch mode        
+        self.set_track_clips_warp_mode(track_index, 3)
+
+
+    def set_track_clips_warp_mode(self, track_index, warp_mode):
+        # Possible warp_mode values:
+        # 0 = beats
+        # 1 = tones
+        # 2 = texture
+        # 3 = repitch
+        # 4 = complex
+        # 6 = complex_pro        
+
+        track = self.song().tracks[track_index]
+        for clip_slot in track.clip_slots:
+            clip = clip_slot.clip
+            if clip:                
+                clip.warp_mode = warp_mode
 
