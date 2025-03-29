@@ -165,7 +165,7 @@ class APC40_CUSTOM(APC):
         #     # ringed_encoder = make_ring_encoder(48 * index, 56 * index, name=encoder_name)
         #     ringed_encoder = make_ring_encoder(48 + index, 56 + index, name=encoder_name)
         #     self._global_param_controls.append(ringed_encoder)
-        self._global_bank_buttons = [make_on_off_button(0, 87 + index, name=name) for index, name in enumerate(('Pan_Button', 'Send_A_Button', 'Send_B_Button', 'Send_C_Button'))]        
+        self._global_bank_buttons = [make_on_off_button(0, 87 + index, name=name, skin=self._color_skin) for index, name in enumerate(('Pan_Button', 'Send_A_Button', 'Send_B_Button', 'Send_C_Button'))]        
         self._device_clip_toggle_button = self._device_bank_buttons[0]
         self._device_on_off_button = self._device_bank_buttons[1]
         self._detail_left_button = self._device_bank_buttons[2]
@@ -191,6 +191,7 @@ class APC40_CUSTOM(APC):
         # self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])
 
         self._tap_tempo_button.add_value_listener(lambda value: self.on_tap_tempo_button() if value == 127 else None)
+        self._rec_quantization_button.add_value_listener(lambda value: self.switch_view_listener() if value == 127 else None)
         log(f'{TAG} INITIALIZING CONTROLS DONE')
 
     def _create_session(self):        
@@ -214,7 +215,7 @@ class APC40_CUSTOM(APC):
 
     def _create_transport(self):
         # self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, nudge_up_button=self._nudge_up_button, nudge_down_button=self._nudge_down_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
-        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
+        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, metronome_button=self._metronome_button))
         self._bank_button_translator = ChannelTranslationSelector(name='Bank_Button_Translations', is_enabled=False)
 
     def _create_global_control(self):
@@ -493,4 +494,14 @@ class APC40_CUSTOM(APC):
             clip = clip_slot.clip
             if clip:                
                 clip.warp_mode = warp_mode
+
+    # Toggle between arranger and session view, basically what the tab key does
+    def switch_view_listener(self):
+        view = self.application().view        
+        if view.focused_document_view == 'Session':
+            view.focus_view('Arranger')
+        else:
+            view.focus_view('Session')
+
+
 
