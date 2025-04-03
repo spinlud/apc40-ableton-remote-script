@@ -7,6 +7,7 @@ import re
 from functools import partial
 import signal, sys
 import math
+from collections import defaultdict
 
 from _Framework.Task import TimerTask
 from _Framework.ButtonMatrixElement import ButtonMatrixElement
@@ -58,7 +59,7 @@ class APC40_CUSTOM(APC):
         with self.component_guard():
             global logger
             logger = self.log_message
-            log('\n\n HELLO MUSIC WORLD \n\n')
+            log('\n\n HELLO MUSIC WORLD \n')
 
             self._create_controls()
             self._create_session()
@@ -78,6 +79,7 @@ class APC40_CUSTOM(APC):
             self._metronome_led_buttons = []
             self._performance_pads = []
             self._clip_slot_listeners = {}
+            self._clip_listeners = {}
             self.create_performance_pads()
             self.create_metronome_led_buttons()
             self.song().add_current_song_time_listener(self.song_time_listener)
@@ -87,6 +89,8 @@ class APC40_CUSTOM(APC):
             self.init_bpm_buttons()
             self.init_set_warp_mode_complex_buttons()
             self.init_set_bpm_from_clip_buttons()
+            self.init_clip_navigation_buttons()
+            self.init_clip_slots_listeners()
             # self.init_loop_buttons()
 
             for i, btn in enumerate(self._select_buttons):
@@ -229,7 +233,7 @@ class APC40_CUSTOM(APC):
 
     def _create_transport(self):
         # self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, nudge_up_button=self._nudge_up_button, nudge_down_button=self._nudge_down_button, tap_tempo_button=self._tap_tempo_button, quant_toggle_button=self._rec_quantization_button, overdub_button=self._overdub_button, metronome_button=self._metronome_button))
-        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, record_button=self._record_button, metronome_button=self._metronome_button))
+        self._transport = TransportComponent(name='Transport', is_enabled=False, layer=Layer(play_button=self._play_button, stop_button=self._stop_button, metronome_button=self._metronome_button))
         self._bank_button_translator = ChannelTranslationSelector(name='Bank_Button_Translations', is_enabled=False)
 
     def _create_global_control(self):
@@ -299,19 +303,34 @@ class APC40_CUSTOM(APC):
         # Documentation at https://nsuspray.github.io/Live_API_Doc/11.0.0.xml
         self._beat = self.song().get_current_beats_song_time().beats
 
-        if prev_beat != self._beat:            
+        if prev_beat != self._beat:
             if self._beat == 1:
                 self._metronome_led_buttons[3].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[0].set_light('Session.ClipStarted')            
+                self._metronome_led_buttons[0].set_light('Session.ClipStarted')                            
             elif self._beat == 2:
                 self._metronome_led_buttons[0].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[1].set_light('Session.ClipStarted')
+                self._metronome_led_buttons[1].set_light('Session.ClipStarted')                
             elif self._beat == 3:
                 self._metronome_led_buttons[1].set_light('Session.ClipEmpty')
                 self._metronome_led_buttons[2].set_light('Session.ClipStarted')
             elif self._beat == 4:
                 self._metronome_led_buttons[2].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[3].set_light('Session.ClipStarted')
+                self._metronome_led_buttons[3].set_light('Session.ClipStarted')            
+
+            for track in self.song().tracks[:SESSION_WIDTH]:
+                if track.playing_slot_index > -1:
+                    clip = track.clip_slots[track.playing_slot_index].clip
+                    remaining_bars = int((min(clip.loop_end, clip.end_marker) // 4) - (clip.playing_position // 4))
+                    beat_index_backward = 4 - (round(clip.playing_position) % 4)
+                    t = f'{remaining_bars}.{beat_index_backward}¦'
+                    tokens = clip.name.split('¦')
+                    new_clip_name = t + '¦'.join(tokens[1:])
+                    
+                    # We can't update Ableton UI in a listener notification. We have to defer the task.
+                    task = TimerTask(duration=0.01)  # delay molto breve                    
+                    task.on_finish = lambda clip=clip, new_clip_name=new_clip_name: setattr(clip, 'name', new_clip_name)
+                    self._tasks.add(task)
+
 
     def song_is_playing_listener(self):
         # Turn off metronome buttons on stop
@@ -378,11 +397,16 @@ class APC40_CUSTOM(APC):
 
         track = self.song().tracks[track_index]
 
+        # Delete clip listeners
+        if track_index in self._clip_listeners:
+            for clip, listener in self._clip_listeners[track_index].items():
+                clip.remove_playing_status_listener(listener)                
+            del self._clip_listeners[track_index]
+
         # Delete clip slot listeners
         if track_index in self._clip_slot_listeners:
             for clip_slot, listener in self._clip_slot_listeners[track_index].items():
-                clip_slot.remove_is_triggered_listener(listener)
-                # log(f'Removed listener for slot {clip_slot.clip.name}')
+                clip_slot.remove_is_triggered_listener(listener)                
             del self._clip_slot_listeners[track_index]
 
         # Delete all clips in the track
@@ -415,6 +439,95 @@ class APC40_CUSTOM(APC):
             # NB: use self.on_deck_load(track_index, add_trigger_next_clip=True) to automatically trigger next clip without using follow actions (for dj loops)
             self._deck_load_buttons[i].add_value_listener(lambda value, track_index=i: self.on_deck_load(track_index, False) if value == 127 else None)
 
+    def init_clip_slots_listeners(self, only_this_track_index=None, add_trigger_next_clip=False):        
+        song = self.song()
+        for track_index, track in enumerate(song.tracks[:SESSION_WIDTH]):
+            if only_this_track_index is not None and track_index != only_this_track_index:
+                continue            
+
+            clip_slots_with_clip = [clip_slot for clip_slot in track.clip_slots if clip_slot.has_clip]
+            last_clip_slot = clip_slots_with_clip[-1] if len(clip_slots_with_clip) > 0 else None
+
+            for clip_slot_index, clip_slot in enumerate(track.clip_slots):
+                clip = clip_slot.clip
+                if not clip:
+                    continue
+
+                # Clear clip listeners    
+                if track_index in self._clip_listeners:
+                    if clip in self._clip_listeners[track_index]:
+                        listener = self._clip_listeners[track_index][clip]
+                        clip.remove_playing_status_listener(listener)
+                        del self._clip_listeners[track_index][clip]        
+
+                # Clear clip slot listeners
+                if track_index in self._clip_slot_listeners:
+                    if clip_slot in self._clip_slot_listeners[track_index]:
+                        listener = self._clip_slot_listeners[track_index][clip_slot]
+                        clip_slot.remove_is_triggered_listener(listener)
+                        del self._clip_slot_listeners[track_index][clip_slot]
+
+                # Add clip listener
+                def clip_playing_status_listener(*args, clip=clip):
+                    if not clip.is_playing:                        
+                        tokens = clip.name.split('¦')                        
+                        original_clip_name = '¦' + '¦'.join(tokens[-2:])                        
+                        # We can't update Ableton UI in a listener notification. We have to defer the task.
+                        task = TimerTask(duration=0.1)
+                        task.on_finish = lambda clip=clip, original_clip_name=original_clip_name: setattr(clip, 'name', original_clip_name)
+                        self._tasks.add(task)
+
+                clip.add_playing_status_listener(clip_playing_status_listener)
+                if not track_index in self._clip_listeners:
+                    self._clip_listeners[track_index] = {}
+                self._clip_listeners[track_index][clip] = clip_playing_status_listener
+
+                # Add clip_slot listener
+                def clip_slot_triggered_listener(*args, track=track, track_index=track_index, clip_slot=clip_slot, clip_slot_index=clip_slot_index):                    
+                    clip = clip_slot.clip 
+                    if clip and clip.is_playing and song.view.follow_song and song.view.selected_track == track:                                                
+                        song.view.highlighted_clip_slot = clip_slot
+                        self._session.set_offsets(0, clip_slot_index)
+                        clip_slot.clip.view.show_loop()                                        
+
+                clip_slot.add_is_triggered_listener(clip_slot_triggered_listener)
+                if not track_index in self._clip_slot_listeners:
+                    self._clip_slot_listeners[track_index] = {}
+                self._clip_slot_listeners[track_index][clip_slot] = clip_slot_triggered_listener
+                
+                # Add clip length (bars) as prefix to the clip name, if not present
+                if (clip.name[0] != '¦'):
+                    clip.name = f'¦{math.floor(int(clip.length) / 4)}¦ {clip.name}'
+
+                # Set start/end markers the same as loop markers (only for clips that doesn't have looping already activated)
+                if not clip.looping:
+                    # NB: we have to enable looping before making changes. Also note that when looping=False, loop_start is the start_marker
+                    # and loop_end is the end_marker. Not sure why, but this the way.
+                    clip.looping = True
+                    clip.loop_start = clip.start_marker
+                    clip.loop_end = clip.end_marker
+                    # clip.looping = False
+
+                # Set clip grid to 1 bar and zoom
+                clip.view.grid_quantization = 4
+                clip.view.show_loop()
+
+                if add_trigger_next_clip:
+                    # Custom playing next clip listener (to make DJ loops usable!)
+                    # NB: for this to work with loops of 1/4, global quantization should be 1/4
+                    def trigger_next_clip_listener(*args, clip=clip, clip_slot_index=clip_slot_index):
+                        if clip.looping:
+                            return
+                        if clip.loop_end - clip.playing_position < 1:
+                            next_clip_slot = track.clip_slots[clip_slot_index + 1]
+                            if next_clip_slot.has_clip and not next_clip_slot.clip.is_triggered: 
+                                next_clip_slot.clip.fire()
+                                log(f'[{clip.name}] Triggered clip {next_clip_slot.clip.name}')                            
+
+                    # Add listener (exclude last clip)
+                    if clip != last_clip_slot.clip:
+                        clip.add_playing_position_listener(trigger_next_clip_listener)
+
     def on_deck_load(self, track_index, add_trigger_next_clip=False):
         # log(f'LOADED DECK {track_index}')
         view = self.application().view
@@ -433,62 +546,11 @@ class APC40_CUSTOM(APC):
 
         # If the track header is selected, the focus will be on the track and not on the clip slot so we have to use this trick.
         view.scroll_view(1, 'Session', False) # 1=scroll down
-        view.scroll_view(0, 'Session', False) # 0=scroll up
+        view.scroll_view(0, 'Session', False) # 0=scroll up        
         
-        def deferred_handler(*args, **kargs):
-            # NB: reference to track can be changed due to clips load, so we need to access it from song
-            track = song.tracks[track_index]
-            clip_slots_with_clip = [clip_slot for clip_slot in track.clip_slots if clip_slot.has_clip]
-
-            for clip_slot_index, clip_slot in enumerate(clip_slots_with_clip):
-                clip = clip_slot.clip
-                if clip:                    
-                    def clip_slot_listener(*args, clip_slot=clip_slot):
-                        # log(f'[Clip SLot Listener] {clip_slot.clip.name}')
-                        if clip_slot.clip and clip_slot.is_playing and song.view.follow_song and song.view.selected_track == track:
-                            song.view.highlighted_clip_slot = clip_slot
-
-                    if track_index in self._clip_slot_listeners:
-                        if clip_slot in self._clip_slot_listeners[track_index]:
-                            listener = self._clip_slot_listeners[track_index][clip_slot]
-                            clip_slot.remove_is_triggered_listener(listener)
-                            del self._clip_slot_listeners[track_index][clip_slot]
-                            # log(f'Removed listener for slot {clip_slot.clip.name}')
-
-                    clip_slot.add_is_triggered_listener(clip_slot_listener)
-                    if not track_index in self._clip_slot_listeners:
-                        self._clip_slot_listeners[track_index] = {}
-                    self._clip_slot_listeners[track_index][clip_slot] = clip_slot_listener
-
-                    clip.name = f'{int(clip.length)}__{clip.name}'
-
-                    # Set start/end markers the same as loop markers (only for clips that doesn't have looping already activated)
-                    if not clip.looping:
-                        # NB: we have to enable looping before making changes. Also note that when looping=False, loop_start is the start_marker
-                        # and loop_end is the end_marker. Not sure why, but this the way.
-                        clip.looping = True
-                        clip.loop_start = clip.start_marker
-                        clip.loop_end = clip.end_marker
-                        clip.looping = False
-
-                    if add_trigger_next_clip:
-                        # Custom playing next clip listener (to make DJ loops usable!)
-                        # NB: for this to work with loops of 1/4, global quantization should be 1/4
-                        def trigger_next_clip_listener(*args, clip=clip, clip_slot_index=clip_slot_index):
-                            if clip.looping:
-                                return
-                            if clip.loop_end - clip.playing_position < 1:
-                                next_clip_slot = track.clip_slots[clip_slot_index + 1]
-                                if next_clip_slot.has_clip and not next_clip_slot.clip.is_triggered: 
-                                    next_clip_slot.clip.fire()
-                                    log(f'[{clip.name}] Triggered clip {next_clip_slot.clip.name}')                            
-
-                        # Add listener (exclude last clip)
-                        if clip != clip_slots_with_clip[-1]:
-                            clip.add_playing_position_listener(trigger_next_clip_listener)
-        
+        # Wait clips to load from Bome before initializing listeners
         timer_task = TimerTask(duration=2.0)
-        timer_task.on_finish = deferred_handler        
+        timer_task.on_finish = lambda: self.init_clip_slots_listeners(only_this_track_index=track_index, add_trigger_next_clip=add_trigger_next_clip)
         self._tasks.add(timer_task)
 
     def init_bpm_buttons(self):
@@ -519,12 +581,14 @@ class APC40_CUSTOM(APC):
     def on_tap_tempo_button(self):
         song = self.song()        
         song.view.follow_song = not song.view.follow_song
-        for track in song.tracks:
-            for clip_slot in track.clip_slots:
-                if clip_slot.is_playing:
-                    song.view.highlighted_clip_slot = clip_slot
+        if song.view.follow_song:
+            for track_index, track in enumerate(song.tracks[:SESSION_WIDTH]):
+                if track.playing_slot_index > -1:                    
+                    song.selected_track = track
+                    song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
+                    self._session.set_offsets(0, track.playing_slot_index)                    
                     return
-
+            
     def init_set_warp_mode_complex_buttons(self):
         btns = []
         for i in range(4, 8):
@@ -596,11 +660,46 @@ class APC40_CUSTOM(APC):
             view.focus_view('Session')
 
     def track_select_listener(self, track_index):
-        track = self.song().tracks[track_index]
-        for clip_slot in track.clip_slots:
+        song = self.song()
+        track = song.tracks[track_index]
+
+        if track.playing_slot_index > -1:
+            song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
+            if song.view.follow_song:
+                self._session.set_offsets(0, track.playing_slot_index)
+
+    def move_highlighted_clip_start(self, bars_offset=1):
+        view = self.song().view
+        clip_slot = view.highlighted_clip_slot
+        track = clip_slot.canonical_parent
+        clip = clip_slot.clip
+
+        if clip and clip.looping:
+            start_marker_new = clip.start_marker + bars_offset * 4
+            if start_marker_new >= clip.loop_start and start_marker_new < clip.loop_end:
+                clip.start_marker = clip.start_marker + bars_offset * 4
+
+    def reset_track_clips_start(self):
+        for clip_slot in self.song().view.selected_track.clip_slots:
             clip = clip_slot.clip
-            if clip and clip.is_playing:
-                self.song().view.highlighted_clip_slot = clip_slot
+            if clip and clip.looping:
+                clip.start_marker = clip.loop_start
+
+    def play_highlighted_clip(self):
+        view = self.song().view
+        clip_slot = view.highlighted_clip_slot
+        if clip_slot.clip:
+            clip_slot.fire()
+
+    def init_clip_navigation_buttons(self):
+        pan_btn, send_a_btn, send_b_btn, send_c_btn = self._global_bank_buttons
+
+        pan_btn.add_value_listener(lambda value: self.move_highlighted_clip_start(-1) if value == 127 else None)
+        send_a_btn.add_value_listener(lambda value: self.move_highlighted_clip_start(1) if value == 127 else None)
+        send_b_btn.add_value_listener(lambda value: self.move_highlighted_clip_start(-4) if value == 127 else None)
+        send_c_btn.add_value_listener(lambda value: self.move_highlighted_clip_start(4) if value == 127 else None)
+        self._record_button.add_value_listener(lambda value: self.play_highlighted_clip() if value == 127 else None)
+        self._overdub_button.add_value_listener(lambda value: self.reset_track_clips_start() if value == 127 else None)
 
     def init_loop_buttons(self):
         pan_btn, send_a_btn, send_b_btn, send_c_btn = self._global_bank_buttons
