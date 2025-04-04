@@ -93,6 +93,18 @@ class APC40_CUSTOM(APC):
             self.init_clip_slots_listeners()
             # self.init_loop_buttons()
 
+            # Reset track name when playback is stopped (remove clip bars countdowns)
+            def __song_is_playing_listener(*args):
+                song = self.song()
+                if not song.is_playing:                    
+                    for track in song.tracks[:SESSION_WIDTH]:
+                        # We can't update Ableton UI in a listener. We have to defer the task.
+                        timer_task = TimerTask(duration=0.01)
+                        timer_task.on_finish = lambda track=track: setattr(track, 'name', track.name.split('¦')[0].strip())
+                        self._tasks.add(timer_task)                                
+
+            self.song().add_is_playing_listener(__song_is_playing_listener)
+
             for i, btn in enumerate(self._select_buttons):
                 btn.add_value_listener(lambda value, track_index=i: self.track_select_listener(track_index) if value == 127 else None)
 
@@ -101,8 +113,8 @@ class APC40_CUSTOM(APC):
                 self.init_performance_pads_colors()
 
             timer_task = TimerTask(duration=5.0)
-            timer_task.on_finish = __handler        
-            self._tasks.add(timer_task)                
+            timer_task.on_finish = __handler    
+            self._tasks.add(timer_task)           
 
     def _with_shift(self, button):
         return ComboElement(button, modifiers=[self._shift_button])
@@ -322,15 +334,17 @@ class APC40_CUSTOM(APC):
                     clip = track.clip_slots[track.playing_slot_index].clip
                     remaining_bars = int((min(clip.loop_end, clip.end_marker) // 4) - (clip.playing_position // 4))
                     beat_index_backward = 4 - (round(clip.playing_position) % 4)
-                    t = f'{remaining_bars}.{beat_index_backward}¦'
-                    tokens = clip.name.split('¦')
-                    new_clip_name = t + '¦'.join(tokens[1:])
+                    t = f'{remaining_bars}.{beat_index_backward}¦'                    
                     
                     # We can't update Ableton UI in a listener notification. We have to defer the task.
-                    task = TimerTask(duration=0.01)  # delay molto breve                    
-                    task.on_finish = lambda clip=clip, new_clip_name=new_clip_name: setattr(clip, 'name', new_clip_name)
+                    task = TimerTask(duration=0.01)                                        
+                    task.on_finish = lambda track=track: setattr(track, 'name', track.name.split('¦')[0].strip() + f' ¦ -{t}')
+                    self._tasks.add(task)                    
+                else:
+                    # We can't update Ableton UI in a listener notification. We have to defer the task.
+                    task = TimerTask(duration=0.01)
+                    task.on_finish = lambda track=track: setattr(track, 'name', track.name.split('¦')[0].strip())
                     self._tasks.add(task)
-
 
     def song_is_playing_listener(self):
         # Turn off metronome buttons on stop
@@ -469,13 +483,16 @@ class APC40_CUSTOM(APC):
 
                 # Add clip listener
                 def clip_playing_status_listener(*args, clip=clip):
-                    if not clip.is_playing:                        
-                        tokens = clip.name.split('¦')                        
-                        original_clip_name = '¦' + '¦'.join(tokens[-2:])                        
-                        # We can't update Ableton UI in a listener notification. We have to defer the task.
-                        task = TimerTask(duration=0.1)
-                        task.on_finish = lambda clip=clip, original_clip_name=original_clip_name: setattr(clip, 'name', original_clip_name)
-                        self._tasks.add(task)
+                    pass
+                    # if not clip.is_playing:                        
+                    #     tokens = clip.name.split('¦')
+                    #     if len(tokens) < 2:
+                    #         return              
+                    #     original_clip_name = '¦' + '¦'.join(tokens[-2:])                        
+                    #     # We can't update Ableton UI in a listener notification. We have to defer the task.
+                    #     task = TimerTask(duration=0.1)
+                    #     task.on_finish = lambda clip=clip, original_clip_name=original_clip_name: setattr(clip, 'name', original_clip_name)
+                    #     self._tasks.add(task)
 
                 clip.add_playing_status_listener(clip_playing_status_listener)
                 if not track_index in self._clip_listeners:
@@ -488,7 +505,7 @@ class APC40_CUSTOM(APC):
                     if clip and clip.is_playing and song.view.follow_song and song.view.selected_track == track:                                                
                         song.view.highlighted_clip_slot = clip_slot
                         self._session.set_offsets(0, clip_slot_index)
-                        clip_slot.clip.view.show_loop()                                        
+                        clip_slot.clip.view.show_loop()
 
                 clip_slot.add_is_triggered_listener(clip_slot_triggered_listener)
                 if not track_index in self._clip_slot_listeners:
@@ -496,8 +513,12 @@ class APC40_CUSTOM(APC):
                 self._clip_slot_listeners[track_index][clip_slot] = clip_slot_triggered_listener
                 
                 # Add clip length (bars) as prefix to the clip name, if not present
-                if (clip.name[0] != '¦'):
-                    clip.name = f'¦{math.floor(int(clip.length) / 4)}¦ {clip.name}'
+                if ('¦' not in clip.name):
+                    clip_bars = math.floor(int(clip.length) / 4)                    
+                    fill_char = chr(0x202F) # narrow no-break space
+                    # To align prefixes for better UI
+                    prefix = str(clip_bars).rjust(3).replace(' ', fill_char)
+                    clip.name = f'{prefix}¦ {clip.name}'
 
                 # Set start/end markers the same as loop markers (only for clips that doesn't have looping already activated)
                 if not clip.looping:
