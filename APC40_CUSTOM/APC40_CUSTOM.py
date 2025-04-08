@@ -80,6 +80,9 @@ class APC40_CUSTOM(APC):
             self._performance_pads = []
             self._clip_slot_listeners = {}
             self._clip_listeners = {}
+            self._tracks_beat_repeat = {} # <track, {}>
+            self._tracks_beat_repeat_active = {} # <track, bool>
+            self._tracks_loop_active = {} # <track, bool>            
             self.create_performance_pads()
             self.create_metronome_led_buttons()
             self.song().add_current_song_time_listener(self.song_time_listener)
@@ -89,9 +92,10 @@ class APC40_CUSTOM(APC):
             self.init_bpm_buttons()
             self.init_set_warp_mode_complex_buttons()
             self.init_set_bpm_from_clip_buttons()
-            self.init_clip_navigation_buttons()
+            # self.init_clip_navigation_buttons()
             self.init_clip_slots_listeners()
             # self.init_loop_buttons()
+            self.init_loop_buttons()
 
             # Reset track name when playback is stopped (remove clip bars countdowns)
             def __song_is_playing_listener(*args):
@@ -105,8 +109,9 @@ class APC40_CUSTOM(APC):
 
             self.song().add_is_playing_listener(__song_is_playing_listener)
 
-            for i, btn in enumerate(self._select_buttons):
-                btn.add_value_listener(lambda value, track_index=i: self.track_select_listener(track_index) if value == 127 else None)
+            for track_index, track in enumerate(self.song().tracks[:SESSION_WIDTH]):
+                btn = self._select_buttons[track_index]
+                btn.add_value_listener(lambda value, track=track: self.track_select_listener(track) if value == 127 else None)                
 
             # Init performance pads color with some delay
             def __handler(*args):
@@ -195,7 +200,11 @@ class APC40_CUSTOM(APC):
         #     # ringed_encoder = make_ring_encoder(48 * index, 56 * index, name=encoder_name)
         #     ringed_encoder = make_ring_encoder(48 + index, 56 + index, name=encoder_name)
         #     self._global_param_controls.append(ringed_encoder)
-        self._global_bank_buttons = [make_on_off_button(0, 87 + index, name=name, skin=self._color_skin) for index, name in enumerate(('Pan_Button', 'Send_A_Button', 'Send_B_Button', 'Send_C_Button'))]        
+        self._global_bank_buttons = [make_on_off_button(0, 87 + index, name=name, skin=self._color_skin) for index, name in enumerate(('Pan_Button', 'Send_A_Button', 'Send_B_Button', 'Send_C_Button'))]
+        self._pan_button = self._global_bank_buttons[0]
+        self._send_a_button = self._global_bank_buttons[1]
+        self._send_b_button = self._global_bank_buttons[2]
+        self._send_b_button = self._global_bank_buttons[3]
         self._device_clip_toggle_button = self._device_bank_buttons[0]
         self._device_on_off_button = self._device_bank_buttons[1]
         self._detail_left_button = self._device_bank_buttons[2]
@@ -309,26 +318,43 @@ class APC40_CUSTOM(APC):
             button.add_value_listener(lambda value, btn=button: self.empty_listener(btn))
             self._metronome_led_buttons.append(button)
 
-    def song_time_listener(self):
-        prev_beat = self._beat
+    def should_trigger_next_clip(self, track):
+        if track.playing_slot_index > -1:
+            # First check if there is some clip already triggered: no action in that case
+            for clip_slot in track.clip_slots:
+                if clip_slot.is_triggered:
+                    return                   
+            clip = track.clip_slots[track.playing_slot_index].clip            
+            if not clip.looping and clip.end_marker - clip.playing_position <= 1: # 1 beat resolution (1/4)
+                for clip_slot in track.clip_slots[track.playing_slot_index+1:]:                                
+                    if clip_slot.clip and not clip_slot.clip.muted and not clip_slot.is_triggered:
+                        clip_slot.fire()
+                        break
+
+    def song_time_listener(self):        
+        prev_beat = self._beat        
 
         # Documentation at https://nsuspray.github.io/Live_API_Doc/11.0.0.xml
         self._beat = self.song().get_current_beats_song_time().beats
 
-        if prev_beat != self._beat:
+        if prev_beat != self._beat:            
             if self._beat == 1:
                 self._metronome_led_buttons[3].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[0].set_light('Session.ClipStarted')                            
+                self._metronome_led_buttons[0].set_light('Session.ClipStarted')                                     
             elif self._beat == 2:
                 self._metronome_led_buttons[0].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[1].set_light('Session.ClipStarted')                
+                self._metronome_led_buttons[1].set_light('Session.ClipStarted')  
             elif self._beat == 3:
                 self._metronome_led_buttons[1].set_light('Session.ClipEmpty')
                 self._metronome_led_buttons[2].set_light('Session.ClipStarted')
             elif self._beat == 4:
                 self._metronome_led_buttons[2].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[3].set_light('Session.ClipStarted')            
+                self._metronome_led_buttons[3].set_light('Session.ClipStarted')
+                # Trigger next clip, if any (skipping muted clips)
+                for track in self.song().tracks[:SESSION_WIDTH]:
+                    self.should_trigger_next_clip(track)                               
 
+            # At each beat update track name with remaining playing clip bars, or clear when stopped
             for track in self.song().tracks[:SESSION_WIDTH]:
                 if track.playing_slot_index > -1:
                     clip = track.clip_slots[track.playing_slot_index].clip
@@ -338,7 +364,7 @@ class APC40_CUSTOM(APC):
                     
                     # We can't update Ableton UI in a listener notification. We have to defer the task.
                     task = TimerTask(duration=0.01)                                        
-                    task.on_finish = lambda track=track: setattr(track, 'name', track.name.split('¦')[0].strip() + f' ¦ -{t}')
+                    task.on_finish = lambda track=track, t=t: setattr(track, 'name', track.name.split('¦')[0].strip() + f' ¦ -{t}')
                     self._tasks.add(task)                    
                 else:
                     # We can't update Ableton UI in a listener notification. We have to defer the task.
@@ -420,7 +446,10 @@ class APC40_CUSTOM(APC):
         # Delete clip slot listeners
         if track_index in self._clip_slot_listeners:
             for clip_slot, listener in self._clip_slot_listeners[track_index].items():
-                clip_slot.remove_is_triggered_listener(listener)                
+                try:
+                    clip_slot.remove_is_triggered_listener(listener)
+                except:
+                    pass
             del self._clip_slot_listeners[track_index]
 
         # Delete all clips in the track
@@ -449,11 +478,10 @@ class APC40_CUSTOM(APC):
                 skin=self._color_skin)           
             self._deck_load_buttons.append(btn)
 
-        for i in range(4):
-            # NB: use self.on_deck_load(track_index, add_trigger_next_clip=True) to automatically trigger next clip without using follow actions (for dj loops)
-            self._deck_load_buttons[i].add_value_listener(lambda value, track_index=i: self.on_deck_load(track_index, False) if value == 127 else None)
+        for i in range(4):            
+            self._deck_load_buttons[i].add_value_listener(lambda value, track_index=i: self.on_deck_load(track_index) if value == 127 else None)
 
-    def init_clip_slots_listeners(self, only_this_track_index=None, add_trigger_next_clip=False):        
+    def init_clip_slots_listeners(self, only_this_track_index=None):        
         song = self.song()
         for track_index, track in enumerate(song.tracks[:SESSION_WIDTH]):
             if only_this_track_index is not None and track_index != only_this_track_index:
@@ -463,6 +491,27 @@ class APC40_CUSTOM(APC):
             last_clip_slot = clip_slots_with_clip[-1] if len(clip_slots_with_clip) > 0 else None
 
             for clip_slot_index, clip_slot in enumerate(track.clip_slots):
+                # Clear clip slot listeners
+                if track_index in self._clip_slot_listeners:
+                    if clip_slot in self._clip_slot_listeners[track_index]:
+                        listener = self._clip_slot_listeners[track_index][clip_slot]
+                        clip_slot.remove_is_triggered_listener(listener)
+                        del self._clip_slot_listeners[track_index][clip_slot]
+
+                # Add clip_slot listener
+                def clip_slot_triggered_listener(*args, track=track, track_index=track_index, clip_slot=clip_slot, clip_slot_index=clip_slot_index):                    
+                    clip = clip_slot.clip 
+                    if clip and clip.is_playing and song.view.follow_song and song.view.selected_track == track:                                                
+                        song.view.highlighted_clip_slot = clip_slot
+                        # self._session.set_offsets(0, clip_slot_index)
+                        clip_slot.clip.view.show_loop()
+
+                clip_slot.add_is_triggered_listener(clip_slot_triggered_listener)
+                if not track_index in self._clip_slot_listeners:
+                    self._clip_slot_listeners[track_index] = {}
+                self._clip_slot_listeners[track_index][clip_slot] = clip_slot_triggered_listener
+
+                # Clip stuff
                 clip = clip_slot.clip
                 if not clip:
                     continue
@@ -472,45 +521,37 @@ class APC40_CUSTOM(APC):
                     if clip in self._clip_listeners[track_index]:
                         listener = self._clip_listeners[track_index][clip]
                         clip.remove_playing_status_listener(listener)
-                        del self._clip_listeners[track_index][clip]        
-
-                # Clear clip slot listeners
-                if track_index in self._clip_slot_listeners:
-                    if clip_slot in self._clip_slot_listeners[track_index]:
-                        listener = self._clip_slot_listeners[track_index][clip_slot]
-                        clip_slot.remove_is_triggered_listener(listener)
-                        del self._clip_slot_listeners[track_index][clip_slot]
-
-                # Add clip listener
-                def clip_playing_status_listener(*args, clip=clip):
-                    pass
-                    # if not clip.is_playing:                        
-                    #     tokens = clip.name.split('¦')
-                    #     if len(tokens) < 2:
-                    #         return              
-                    #     original_clip_name = '¦' + '¦'.join(tokens[-2:])                        
-                    #     # We can't update Ableton UI in a listener notification. We have to defer the task.
-                    #     task = TimerTask(duration=0.1)
-                    #     task.on_finish = lambda clip=clip, original_clip_name=original_clip_name: setattr(clip, 'name', original_clip_name)
-                    #     self._tasks.add(task)
+                        del self._clip_listeners[track_index][clip]
+                
+                def clip_playing_status_listener(*args, track=track, track_index=track_index, clip=clip):
+                    if not clip:
+                        return
+                    # On clip stop: deactivate any loop/beat repeat
+                    if not clip.is_playing:
+                        if self._tracks_beat_repeat_active[track]:
+                            beat_repeat_params = self.get_track_beat_repeat_params(track)                            
+                            def __handler(clip=clip, params=beat_repeat_params):
+                                clip.looping = False
+                                if params:
+                                    params['Repeat'].value = 0.0
+                                    params['Volume'].value = 0.0
+                                self._pan_button.set_light('Session.ClipEmpty')
+                                self._tracks_beat_repeat_active[track] = False
+                            task = TimerTask(duration=0.1)
+                            task.on_finish = __handler
+                            self._tasks.add(task)                            
+                        if self._tracks_loop_active[track]:
+                            def __handler(clip=clip):
+                                clip.looping = False
+                                self._tracks_loop_active[track] = False
+                                self._send_a_button.set_light('Session.ClipEmpty')
+                            task = TimerTask(duration=0.1)
+                            task.on_finish = __handler
 
                 clip.add_playing_status_listener(clip_playing_status_listener)
                 if not track_index in self._clip_listeners:
                     self._clip_listeners[track_index] = {}
                 self._clip_listeners[track_index][clip] = clip_playing_status_listener
-
-                # Add clip_slot listener
-                def clip_slot_triggered_listener(*args, track=track, track_index=track_index, clip_slot=clip_slot, clip_slot_index=clip_slot_index):                    
-                    clip = clip_slot.clip 
-                    if clip and clip.is_playing and song.view.follow_song and song.view.selected_track == track:                                                
-                        song.view.highlighted_clip_slot = clip_slot
-                        self._session.set_offsets(0, clip_slot_index)
-                        clip_slot.clip.view.show_loop()
-
-                clip_slot.add_is_triggered_listener(clip_slot_triggered_listener)
-                if not track_index in self._clip_slot_listeners:
-                    self._clip_slot_listeners[track_index] = {}
-                self._clip_slot_listeners[track_index][clip_slot] = clip_slot_triggered_listener
                 
                 # Add clip length (bars) as prefix to the clip name, if not present
                 if ('¦' not in clip.name):
@@ -527,29 +568,13 @@ class APC40_CUSTOM(APC):
                     clip.looping = True
                     clip.loop_start = clip.start_marker
                     clip.loop_end = clip.end_marker
-                    # clip.looping = False
+                    clip.looping = False
 
                 # Set clip grid to 1 bar and zoom
                 clip.view.grid_quantization = 4
                 clip.view.show_loop()
 
-                if add_trigger_next_clip:
-                    # Custom playing next clip listener (to make DJ loops usable!)
-                    # NB: for this to work with loops of 1/4, global quantization should be 1/4
-                    def trigger_next_clip_listener(*args, clip=clip, clip_slot_index=clip_slot_index):
-                        if clip.looping:
-                            return
-                        if clip.loop_end - clip.playing_position < 1:
-                            next_clip_slot = track.clip_slots[clip_slot_index + 1]
-                            if next_clip_slot.has_clip and not next_clip_slot.clip.is_triggered: 
-                                next_clip_slot.clip.fire()
-                                log(f'[{clip.name}] Triggered clip {next_clip_slot.clip.name}')                            
-
-                    # Add listener (exclude last clip)
-                    if clip != last_clip_slot.clip:
-                        clip.add_playing_position_listener(trigger_next_clip_listener)
-
-    def on_deck_load(self, track_index, add_trigger_next_clip=False):
+    def on_deck_load(self, track_index):
         # log(f'LOADED DECK {track_index}')
         view = self.application().view
         view.focus_view('Session')
@@ -571,7 +596,7 @@ class APC40_CUSTOM(APC):
         
         # Wait clips to load from Bome before initializing listeners
         timer_task = TimerTask(duration=2.0)
-        timer_task.on_finish = lambda: self.init_clip_slots_listeners(only_this_track_index=track_index, add_trigger_next_clip=add_trigger_next_clip)
+        timer_task.on_finish = lambda: self.init_clip_slots_listeners(only_this_track_index=track_index)
         self._tasks.add(timer_task)
 
     def init_bpm_buttons(self):
@@ -600,15 +625,14 @@ class APC40_CUSTOM(APC):
         song.tempo += v
 
     def on_tap_tempo_button(self):
-        song = self.song()        
-        song.view.follow_song = not song.view.follow_song
-        if song.view.follow_song:
-            for track_index, track in enumerate(song.tracks[:SESSION_WIDTH]):
-                if track.playing_slot_index > -1:                    
-                    song.selected_track = track
-                    song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
-                    self._session.set_offsets(0, track.playing_slot_index)                    
-                    return
+        song = self.song()
+        if not song.view.follow_song:
+            song.view.follow_song = True
+        track = song.view.selected_track
+        if track.playing_slot_index > -1:                                    
+            song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
+            self._session.set_offsets(0, track.playing_slot_index)
+            return     
             
     def init_set_warp_mode_complex_buttons(self):
         btns = []
@@ -680,14 +704,35 @@ class APC40_CUSTOM(APC):
         else:
             view.focus_view('Session')
 
-    def track_select_listener(self, track_index):
-        song = self.song()
-        track = song.tracks[track_index]
+    def track_select_listener(self, track):
+        song = self.song()        
 
         if track.playing_slot_index > -1:
             song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
             if song.view.follow_song:
                 self._session.set_offsets(0, track.playing_slot_index)
+            if track in self._tracks_beat_repeat_active:                     
+                def __update_leds(track=track):                    
+                    if self._tracks_beat_repeat_active[track]:
+                        self._pan_button.set_light('Session.ClipStarted')
+                        self._send_a_button.set_light('Session.ClipEmpty')
+                    elif self._tracks_loop_active[track]:
+                        self._send_a_button.set_light('Session.ClipStarted')
+                        self._pan_button.set_light('Session.ClipEmpty')
+                    else:
+                        self._pan_button.set_light('Session.ClipEmpty')
+                        self._send_a_button.set_light('Session.ClipEmpty')
+                task = TimerTask(duration=0.1)
+                task.on_finish = __update_leds
+                self._tasks.add(task)
+        # No clip playing in the track
+        else:
+            def __update_leds(track=track):                
+                self._pan_button.set_light('Session.ClipEmpty')
+                self._send_a_button.set_light('Session.ClipEmpty')
+            task = TimerTask(duration=0.1)
+            task.on_finish = __update_leds
+            self._tasks.add(task)
 
     def move_highlighted_clip_start(self, bars_offset=1):
         view = self.song().view
@@ -722,65 +767,258 @@ class APC40_CUSTOM(APC):
         self._record_button.add_value_listener(lambda value: self.play_highlighted_clip() if value == 127 else None)
         self._overdub_button.add_value_listener(lambda value: self.reset_track_clips_start() if value == 127 else None)
 
+    def get_delay_to_next_beat(self):
+        bt = self.song().get_current_beats_song_time()
+        # Calcola la frazione del beat già trascorsa:
+        # Se bt.sub_division e bt.ticks sono 1-indexed, allora:
+        fraction = ((bt.sub_division - 1) * 60 + (bt.ticks - 1)) / 240.0
+        remaining_fraction = 1.0 - fraction
+        beat_duration = 60.0 / self.song().tempo
+        delay = remaining_fraction * beat_duration
+        return delay
+
+    def get_delay_to_next_bar_using_clip(self, clip):
+        """
+        Calcola il delay in secondi fino all'inizio della prossima battuta,
+        utilizzando clip.playing_position (espresso in beat time).
+
+        Poiché una battuta contiene 4 beat, la parte frazionaria attuale della battuta
+        si ottiene con: clip.playing_position % 4. Il tempo residuo (in beat)
+        è 4 - (clip.playing_position % 4), e moltiplicando per la durata di un beat
+        (60/tempo) otteniamo il delay in secondi.
+        """
+        current_position = clip.playing_position  # ad es. 211.6478
+        fraction_of_bar = current_position % 4      # es. 211.6478 % 4 = 3.6478
+        remaining_beats = 4 - fraction_of_bar         # es. 0.3522 beat
+        beat_duration = 60.0 / self.song().tempo       # durata di un beat in secondi
+        delay = remaining_beats * beat_duration
+        return delay
+
+    def get_delay_to_next_bar(self):
+        song = self.song()
+        bt = song.get_current_beats_song_time()
+        # Calcola i tick trascorsi nella battuta corrente:
+        # (bt.beats - 1) * 240: tick dovuti ai beat già completati nella battuta
+        # (bt.sub_division - 1) * 60: tick dovuti alle subdivision già completate nel beat corrente
+        # (bt.ticks - 1): tick trascorsi nella subdivision corrente
+        current_ticks = (bt.beats - 1) * 240 + (bt.sub_division - 1) * 60 + (bt.ticks - 1)
+        
+        total_ticks_in_bar = 960  # 4 beat * 240 tick per beat
+        
+        # Frazione della battuta già trascorsa
+        fraction = (current_ticks) / total_ticks_in_bar
+        remaining_fraction = 1.0 - fraction
+
+        # Durata di un beat in secondi = 60 / BPM, quindi la durata di una battuta è 4 volte quella
+        bar_duration = 4 * (60.0 / song.tempo)
+        delay = remaining_fraction * bar_duration
+        return delay
+
+    def get_delay_to_next_bar_alternative(self):
+        """
+        Calcola il delay in secondi fino all'inizio della prossima battuta
+        utilizzando song.current_song_time (beat time in float).
+        
+        Poiché song.current_song_time include anche la parte frazionaria,
+        il calcolo usa:
+        
+            delay = (4 - (song.current_song_time % 4)) * (60.0 / song.tempo)
+        
+        Questo garantisce la massima precisione possibile.
+        """
+        song = self.song()
+        current_time = song.current_song_time  # espresso in beat time, ad es. 211.6478
+        beat_in_bar = current_time % 4          # include anche la frazione (es. 3.6478)
+        remaining_beats = 4 - beat_in_bar         # ad es. 0.3522 beat
+        beat_duration = 60.0 / song.tempo         # durata di un beat in secondi
+        delay = remaining_beats * beat_duration
+        return delay
+
+    def get_delay_to_next_bar_using_clip(self, clip):
+        """
+        Calcola il delay in secondi fino all'inizio della prossima battuta,
+        utilizzando clip.playing_position (espresso in beat time).
+
+        Poiché una battuta contiene 4 beat, la parte frazionaria attuale della battuta
+        si ottiene con: clip.playing_position % 4. Il tempo residuo (in beat)
+        è 4 - (clip.playing_position % 4), e moltiplicando per la durata di un beat
+        (60/tempo) otteniamo il delay in secondi.
+        """
+        current_position = clip.playing_position  # ad es. 211.6478
+        fraction_of_bar = current_position % 4      # es. 211.6478 % 4 = 3.6478
+        remaining_beats = 4 - fraction_of_bar         # es. 0.3522 beat
+        beat_duration = 60.0 / self.song().tempo       # durata di un beat in secondi
+        delay = remaining_beats * beat_duration
+        return delay        
+
+    def get_track_beat_repeat_params(self, track):
+        if not track:
+            return None        
+
+        if track in self._tracks_beat_repeat:
+            if self._tracks_beat_repeat[track] == None:
+                del self._tracks_beat_repeat[track]
+                return None
+            elif 'Device On' in self._tracks_beat_repeat[track]:            
+                return self._tracks_beat_repeat[track]        
+
+        for device in track.devices:
+            if device.class_name == 'BeatRepeat':
+                self._tracks_beat_repeat[track] = {}
+                for param in device.parameters:
+                    if param.name in ['Device On', 'Repeat', 'Grid', 'Volume']:
+                        self._tracks_beat_repeat[track][param.name] = param
+                return self._tracks_beat_repeat[track]
+        return None
+
     def init_loop_buttons(self):
         pan_btn, send_a_btn, send_b_btn, send_c_btn = self._global_bank_buttons
-        
-        def __toogle_loop(*args):
-            for clip_slot in self.song().view.selected_track.clip_slots:
-                if clip_slot.is_playing:
-                    clip = clip_slot.clip
-                    clip.looping = not clip.looping                        
-                    return
-        
-        def __create_loop_4_bars(*args):
-            for clip_slot in self.song().view.selected_track.clip_slots:
-                if clip_slot.is_playing:
-                    clip = clip_slot.clip
-                    loop_start_new = round(clip.playing_position)
-                    loop_end_new = loop_start_new + 16                        
 
-                    # We have to handle various cases depending if looping is already activated
-                    if not clip.looping:
-                        if loop_end_new <= clip.loop_end:
-                            clip.looping = True                                            
-                            if loop_start_new > clip.loop_end:
-                                clip.loop_end = loop_end_new
-                                clip.loop_start = loop_start_new
-                            else:
-                                clip.loop_start = loop_start_new
-                                clip.loop_end = loop_end_new
-                    else:
-                        if loop_end_new <= clip.end_marker:
-                            if loop_start_new > clip.loop_end:
-                                clip.loop_end = loop_end_new
-                                clip.loop_start = loop_start_new
-                            else:
-                                clip.loop_start = loop_start_new
-                                clip.loop_end = loop_end_new    
+        # Initialize data structures and beat repeat params caches        
+        for track in self.song().tracks[:SESSION_WIDTH]:
+            self._tracks_beat_repeat_active[track] = False
+            self._tracks_loop_active[track] = False
+            self.get_track_beat_repeat_params(track)
+            
 
+        def __toggle_beat_repeat():
+            track = self.song().view.selected_track
+
+            # No playing clip
+            if track.playing_slot_index <= -1:
+                return
+            
+            clip = track.clip_slots[track.playing_slot_index].clip
+            params = self.get_track_beat_repeat_params(track)                    
+
+            # Beat repeat is active
+            if self._tracks_beat_repeat_active[track]:
+                # Deactivate beat repeat and loop
+                clip.looping = False
+                if params:
+                    def __handler(params=params):                    
+                        # params['Device On'].value = 0.0
+                        params['Repeat'].value = 0.0
+                        params['Volume'].value = 0.0
+                        # params['Grid'].value = 15.0                        
+                        self.should_trigger_next_clip(track)
+                        pan_btn.set_light('Session.ClipEmpty')
+                        self._tracks_beat_repeat_active[track] = False               
+                    task = TimerTask(duration=self.get_delay_to_next_bar_alternative())
+                    task.on_finish = __handler
+                    self._tasks.add(task)
+                else:
+                    self.should_trigger_next_clip(track)
+                    pan_btn.set_light('Session.ClipEmpty')
+                    self._tracks_beat_repeat_active[track] = False        
+                return
+            # Beat repeat is not active  
+            else:    
+                # Activate a loop of 1 bar at the nearest bar position            
+                loop_start_new = round(clip.playing_position / 4) * 4
+                loop_end_new = loop_start_new + 4
+
+                # Avoid going beyond the end of the clip
+                if loop_end_new > clip.end_marker:                
                     return
-        
-        def __halve_loop_length(*args):
-            for clip_slot in self.song().view.selected_track.clip_slots:
-                if clip_slot.is_playing and clip_slot.clip.looping:
-                    clip = clip_slot.clip
-                    loop_end_new = clip.loop_start + (clip.loop_end - clip.loop_start) / 2
-                    # Avoid loops with length less then 1/4, since Ableton can go out of sync with shorter loops...
-                    if loop_end_new - clip.loop_start >= 1:                                          
+                
+                clip.looping = True
+
+                if loop_start_new >= clip.loop_end:
+                    clip.loop_end = loop_end_new
+                    clip.loop_start = loop_start_new
+                else:
+                    clip.loop_start = loop_start_new
+                    clip.loop_end = loop_end_new            
+
+                # Activate beat repeat (start with grid=1 bar)            
+                if params:
+                    # params['Device On'].value = 1.0
+                    params['Volume'].value = 0.8500000238418579 # 0dB
+                    params['Repeat'].value = 1.0
+                    params['Grid'].value = 15.0                
+
+                pan_btn.set_light('Session.ClipStarted')
+                send_a_btn.set_light('Session.ClipEmpty')
+                self._tracks_beat_repeat_active[track] = True
+                self._tracks_loop_active[track] = False
+
+        def __toogle_loop():
+            track = self.song().view.selected_track
+
+            # No playing clip
+            if track.playing_slot_index <= -1:
+                return
+
+            # Can't activate generic loop if beat repeat is already active
+            if self._tracks_beat_repeat_active[track]:
+                return
+            
+            clip = track.clip_slots[track.playing_slot_index].clip
+
+            # Loop active
+            if self._tracks_loop_active[track]:
+                clip.looping = False
+                send_a_btn.set_light('Session.ClipEmpty')
+                self._tracks_loop_active[track] = False
+            # Loop not active
+            else:                
+                # Set a loop of 4 bars starting at the nearest bar
+                loop_start_new = round(clip.playing_position / 4) * 4
+                loop_end_new = loop_start_new + 16
+                # Avoid going beyond the end of the clip
+                if loop_end_new > clip.end_marker:                
+                    return        
+                clip.looping = True
+                if loop_start_new >= clip.loop_end:
+                    clip.loop_end = loop_end_new
+                    clip.loop_start = loop_start_new
+                else:
+                    clip.loop_start = loop_start_new
+                    clip.loop_end = loop_end_new
+                send_a_btn.set_light('Session.ClipStarted')
+                self._tracks_loop_active[track] = True
+
+        def __halve_looper():
+            track = self.song().view.selected_track
+            if track.playing_slot_index > -1:
+                if self._tracks_beat_repeat_active[track]:
+                    params = self.get_track_beat_repeat_params(track)            
+                    if params:
+                        param = params['Grid']
+                        param.value = max(param.value - 2., 1.0)
+                elif self._tracks_loop_active[track]:
+                    clip = track.clip_slots[track.playing_slot_index].clip
+                    new_loop_length = (clip.loop_end - clip.loop_start) / 2
+                    # At least 1 bar loop, to avoid going out of sync with global transport
+                    if new_loop_length >= 4:
+                        clip.loop_end = clip.loop_start + new_loop_length
+
+        def __double_looper():
+            track = self.song().view.selected_track
+            if track.playing_slot_index > -1:
+                if self._tracks_beat_repeat_active[track]:
+                    params = self.get_track_beat_repeat_params(track)            
+                    if params:
+                        param = params['Grid']
+                        param.value = min(param.value + 2., param.max)
+                elif self._tracks_loop_active[track]:
+                    clip = track.clip_slots[track.playing_slot_index].clip
+                    new_loop_length = (clip.loop_end - clip.loop_start) * 2
+                    # Max 32 bars loop
+                    if new_loop_length <= 128:
+                        loop_end_new = clip.loop_start + new_loop_length
+                        # Avoid going beyond the end of the clip
+                        if loop_end_new > clip.end_marker:                
+                            return
                         clip.loop_end = loop_end_new
-                    return
-        
-        def __double_loop_length(*args):
-            for clip_slot in self.song().view.selected_track.clip_slots:
-                if clip_slot.is_playing and clip_slot.clip.looping:
-                    clip = clip_slot.clip
-                    loop_end_new = clip.loop_start + (clip.loop_end - clip.loop_start) * 2
-                    
-                    if loop_end_new < clip.end_marker:
-                        clip.loop_end = loop_end_new
-                    return            
 
-        pan_btn.add_value_listener(lambda value: __toogle_loop() if value == 127 else None)
-        send_a_btn.add_value_listener(lambda value: __create_loop_4_bars() if value == 127 else None)
-        send_b_btn.add_value_listener(lambda value: __halve_loop_length() if value == 127 else None)
-        send_c_btn.add_value_listener(lambda value: __double_loop_length() if value == 127 else None)
+        # pan_btn.set_light('Session.ClipEmpty')
+        # send_a_btn.set_light('Session.ClipEmpty')
+        # send_b_btn.set_light('Session.ClipEmpty')
+        # send_c_btn.set_light('Session.ClipEmpty')
+
+        pan_btn.add_value_listener(lambda value: __toggle_beat_repeat() if value == 127 else None)
+        send_a_btn.add_value_listener(lambda value: __toogle_loop() if value == 127 else None)
+        send_b_btn.add_value_listener(lambda value: __halve_looper() if value == 127 else None)
+        send_c_btn.add_value_listener(lambda value: __double_looper() if value == 127 else None)
