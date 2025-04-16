@@ -46,7 +46,9 @@ regex_pattern = re.compile(r'\[[^\]]*?(\d+(?![A-Za-z]))')
 def log(msg):
     global logger
     if logger is not None:
-        logger(msg)        
+        logger(msg)
+
+make_color_button = partial(make_button, skin=make_biled_skin())   
 
 def make_on_off_button(channel, identifier, *a, **k):
     return ButtonElement(False, MIDI_NOTE_TYPE, channel, identifier, *a, **k)
@@ -59,7 +61,7 @@ class APC40_CUSTOM(APC):
         with self.component_guard():
             global logger
             logger = self.log_message
-            log('\n\n HELLO MUSIC WORLD \n')
+            log('\n\n HELLO APC40_CUSTOM \n')
 
             self._create_controls()
             self._create_session()
@@ -147,6 +149,13 @@ class APC40_CUSTOM(APC):
                 self._select_buttons[track_index].add_value_listener(lambda value, track_index=track_index: self.track_select_listener(track_index) if value == 127 else None)
                 self._track_stop_buttons[track_index].add_value_listener(lambda value, track_index=track_index: self.on_track_clips_stop_button(track_index) if value == 127 else None)
 
+            for i in range(SESSION_WIDTH, 8):                
+                select_btn = make_color_button(i, 51, name=f'{i}_Select_Button')
+                stop_btn = make_color_button(i, 52, name=f'Track_{i}_Stop_Button')
+                select_btn.add_value_listener(lambda value, btn=select_btn: btn.set_light('Session.ClipStarted') if value == 127 else btn.set_light('Session.ClipEmpty'))
+                stop_btn.add_value_listener(lambda value, btn=stop_btn: btn.set_light('Session.ClipStarted') if value == 127 else btn.set_light('Session.ClipEmpty'))
+
+
             # Init performance pads color with some delay
             def __handler(*args):
                 self.init_performance_pads_colors()
@@ -160,7 +169,7 @@ class APC40_CUSTOM(APC):
 
     def _create_controls(self):
         log(f'{TAG} INITIALIZING CONTROLS...')
-        make_color_button = partial(make_button, skin=self._color_skin)
+        # make_color_button = partial(make_button, skin=self._color_skin)
         # self = partial(make_button, skin=self._color_skin)
         self._shift_button = make_button(0, 98, resource_type=PrioritizedResource, name='Shift_Button')
         self._right_button = make_button(0, 96, name='Bank_Select_Right_Button')
@@ -264,8 +273,9 @@ class APC40_CUSTOM(APC):
         # self._shifted_scene_buttons = ButtonMatrixElement(rows=[[self._with_shift(button) for button in self._scene_launch_buttons_raw]])        
         log(f'{TAG} INITIALIZING CONTROLS DONE')
 
-    def _create_session(self):        
-        self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, scene_launch_buttons=self._scene_launch_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))        
+    def _create_session(self):
+        # self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, scene_launch_buttons=self._scene_launch_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))        
+        self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))
         # self._session_zoom = SessionZoomingComponent(self._session, name='Session_Overview', enable_skinning=True, is_enabled=False, layer=Layer(button_matrix=self._shifted_matrix, nav_up_button=self._with_shift(self._up_button), nav_down_button=self._with_shift(self._down_button), nav_left_button=self._with_shift(self._left_button), nav_right_button=self._with_shift(self._right_button), scene_bank_buttons=self._shifted_scene_buttons))
         log(f'{TAG} INITIALIZING SESSION DONE')
 
@@ -336,18 +346,12 @@ class APC40_CUSTOM(APC):
         pass
 
     def create_metronome_led_buttons(self):
-        for index in range(4, 8):            
-            button = ButtonElement(
-                is_momentary=False,
-                msg_type=MIDI_NOTE_TYPE,
-                channel=index, # midi channel
-                identifier=52, # midi note
-                name=f'Metronome_Led_Button_{index}',
-                skin=self._color_skin)
-
+        for button in self._scene_launch_buttons_raw:
             # Apparently if we don't add a listener, we can't change the color of the button...Another mystery
             button.add_value_listener(lambda value, btn=button: self.empty_listener(btn))
             self._metronome_led_buttons.append(button)
+        # Reverse buttons list    
+        self._metronome_led_buttons.reverse()
 
     def should_trigger_next_clip(self, track):
         if track.playing_slot_index > -1:
@@ -688,11 +692,13 @@ class APC40_CUSTOM(APC):
         song = self.song()
         song.view.follow_song = False        
         song.view.follow_song = True
-        track = song.view.selected_track
-        if track.playing_slot_index > -1:                                    
-            song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
-            self._session.set_offsets(0, track.playing_slot_index)
-            self.application().view.focus_view('Detail/Clip')            
+        view = self.application().view        
+        if view.focused_document_view == 'Session':
+            track = song.view.selected_track
+            if track.playing_slot_index > -1:                                    
+                song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
+                self._session.set_offsets(0, track.playing_slot_index)
+                self.application().view.focus_view('Detail/Clip')                  
             
     def init_set_warp_mode_complex_buttons(self):
         btns = []
