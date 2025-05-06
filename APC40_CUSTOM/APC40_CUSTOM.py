@@ -41,7 +41,7 @@ FALLBACK_CONTROL_OWNER_PRIORITY = (-1)
 TAG='[MY_APC40]'
 
 logger = None
-regex_pattern = re.compile(r'\[[^\]]*?(\d+(?![A-Za-z]))')
+regex_pattern = re.compile(r'\[[^\]]*?\b(\d+)\b')
 
 def log(msg):
     global logger
@@ -78,6 +78,7 @@ class APC40_CUSTOM(APC):
                 component.set_enabled(False)
 
             self._beat = 0
+            self._beat_offset = 0 # to calibrate downbeat in case of time signatures changes                     
             self._metronome_led_buttons = []
             self._track_select_listeners = {}
             self._performance_pads = []
@@ -95,18 +96,20 @@ class APC40_CUSTOM(APC):
             self.init_set_warp_mode_complex_buttons()
             self.init_set_bpm_from_clip_buttons()
             # self.init_clip_navigation_buttons()
-            self.init_clip_slots_listeners()            
-            self.init_loop_buttons()
+            self.init_clip_slots_listeners()
+            self.init_loop_buttons()                     
             
-            def __overdub_handler(*args):
-                # ['Browser', 'Arranger', 'Session', 'Detail', 'Detail/Clip', 'Detail/DeviceChain']
-                self.application().view.focus_view('Browser')                
-            
-            self._tap_tempo_button.add_value_listener(lambda value: self.on_tap_tempo_button() if value == 127 else None)
-            self._rec_quantization_button.add_value_listener(lambda value: __overdub_handler() if value == 127 else None)
+            self._tap_tempo_button.add_value_listener(lambda value: self.on_tap_tempo_button() if value == 127 else None)            
             self._overdub_button.add_value_listener(lambda value: self.switch_view_listener() if value == 127 else None)
+            self._shift_button.add_value_listener(lambda value: self.shift_button_handler() if value == 127 else None)
+            self._left_button.add_value_listener(lambda value: self.toggle_focus_view(focus_browser=True) if value == 127 else None)
+            self._right_button.add_value_listener(lambda value: self.toggle_focus_view(focus_browser=False) if value == 127 else None)
 
-
+            # Calibrate downbeat offset: useful in case of time signatures change to align metronome leds with the shifted downbeat
+            self._metronome_led_buttons[0].add_value_listener(lambda v: __set_downbeat_offset() if v == 127 else None)
+            def __set_downbeat_offset():          
+                self._beat_offset = 1 - self.song().get_current_beats_song_time().beats
+                
             # Fired when song.tracks property changes (eg add/delete/move tracks)
             def __song_tracks_listener(*args):
                 pass
@@ -275,7 +278,7 @@ class APC40_CUSTOM(APC):
 
     def _create_session(self):
         # self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, scene_launch_buttons=self._scene_launch_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))        
-        self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(track_bank_left_button=self._left_button, track_bank_right_button=self._right_button, scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))
+        self._session = SessionComponent(SESSION_WIDTH, SESSION_HEIGHT, auto_name=True, enable_skinning=True, is_enabled=False, layer=Layer(scene_bank_up_button=self._up_button, scene_bank_down_button=self._down_button, stop_all_clips_button=self._stop_all_button, stop_track_clip_buttons=self._track_stop_buttons, clip_launch_buttons=self._session_matrix, slot_launch_button=self._selected_slot_launch_button, selected_scene_launch_button=self._selected_scene_launch_button))
         # self._session_zoom = SessionZoomingComponent(self._session, name='Session_Overview', enable_skinning=True, is_enabled=False, layer=Layer(button_matrix=self._shifted_matrix, nav_up_button=self._with_shift(self._up_button), nav_down_button=self._with_shift(self._down_button), nav_left_button=self._with_shift(self._left_button), nav_right_button=self._with_shift(self._right_button), scene_bank_buttons=self._shifted_scene_buttons))
         log(f'{TAG} INITIALIZING SESSION DONE')
 
@@ -366,28 +369,26 @@ class APC40_CUSTOM(APC):
                         clip_slot.fire()
                         break
 
-    def song_time_listener(self):        
-        prev_beat = self._beat        
+    def song_time_listener(self):
+        prev_beat = self._beat   
+        song = self.song()
+        bt   = song.get_current_beats_song_time()
+        num  = song.signature_numerator        
+        self._beat = ((bt.beats + self._beat_offset - 1) % num) + 1
 
-        # Documentation at https://nsuspray.github.io/Live_API_Doc/11.0.0.xml
-        self._beat = self.song().get_current_beats_song_time().beats
+        if self._beat != prev_beat:            
+            # indice del LED precedente e corrente (0..3)
+            if prev_beat is not None:
+                prev_led = (prev_beat - 1) % 4
+                self._metronome_led_buttons[prev_led].set_light('Session.ClipEmpty')
 
-        if prev_beat != self._beat:            
-            if self._beat == 1:
-                self._metronome_led_buttons[3].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[0].set_light('Session.ClipStarted')                                     
-            elif self._beat == 2:
-                self._metronome_led_buttons[0].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[1].set_light('Session.ClipStarted')  
-            elif self._beat == 3:
-                self._metronome_led_buttons[1].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[2].set_light('Session.ClipStarted')
-            elif self._beat == 4:
-                self._metronome_led_buttons[2].set_light('Session.ClipEmpty')
-                self._metronome_led_buttons[3].set_light('Session.ClipStarted')
-                # Trigger next clip, if any (skipping muted clips)
+            curr_led = (self._beat - 1) % 4
+            self._metronome_led_buttons[curr_led].set_light('Session.ClipStarted')
+
+            # sull’ultimo beat musicale, lancio il next clip
+            if self._beat == num:
                 for track in self.song().tracks[:SESSION_WIDTH]:
-                    self.should_trigger_next_clip(track)                               
+                    self.should_trigger_next_clip(track)
 
             # At each beat update track name with remaining playing clip bars, or clear when stopped
             for track in self.song().tracks[:SESSION_WIDTH]:
@@ -408,10 +409,18 @@ class APC40_CUSTOM(APC):
                     self._tasks.add(task)
 
     def song_is_playing_listener(self):
+        # Reset downbeat offset if any
+        self._beat_offset = 0
+        
         # Turn off metronome buttons on stop
         if not self.song().is_playing:
-            for button in self._metronome_led_buttons:
-                button.set_light('Session.ClipEmpty')
+            def __task():
+                for button in self._metronome_led_buttons:
+                    button.set_light('Session.ClipEmpty')
+            task = TimerTask(duration=0.1)
+            task.on_finish = __task
+            self._tasks.add(task)
+            
         # Just in case the pads colors have not been initialized, for whatever reason
         self.init_performance_pads_colors()
 
@@ -739,9 +748,11 @@ class APC40_CUSTOM(APC):
                 regex_result = regex_pattern.search(clip.name)                
                 if regex_result:
                     target_bpm = int(regex_result.group(1))
-                    log(f'Changed BPM to {target_bpm} from clip {clip.name}')
-                    self.song().tempo = target_bpm                    
-                    break  
+                    # Check for reasonable bpm
+                    if target_bpm >= 20 and target_bpm <= 250: 
+                        log(f'Changed BPM to {target_bpm} from clip {clip.name}')
+                        self.song().tempo = target_bpm                    
+                        break
 
         # Since we have matched song tempo, we can use repitch mode        
         self.set_track_clips_warp_mode(track_index, 3)
@@ -782,8 +793,8 @@ class APC40_CUSTOM(APC):
         if track.playing_slot_index > -1:
             song.view.highlighted_clip_slot = track.clip_slots[track.playing_slot_index]
             clip = track.clip_slots[track.playing_slot_index].clip
-            if song.view.follow_song:
-                self._session.set_offsets(0, track.playing_slot_index)            
+            # if song.view.follow_song:
+            #     self._session.set_offsets(0, track.playing_slot_index)    
             def __update_leds(track=track):                    
                 if track in self._tracks_beat_repeat and self._tracks_beat_repeat[track]['active']:
                     self._pan_button.set_light('Session.ClipStarted')
@@ -1023,3 +1034,31 @@ class APC40_CUSTOM(APC):
         send_a_btn.add_value_listener(lambda value: __toogle_loop() if value == 127 else None)
         send_b_btn.add_value_listener(lambda value: __halve_looper() if value == 127 else None)
         send_c_btn.add_value_listener(lambda value: __double_looper() if value == 127 else None)
+
+
+    def shift_button_handler(self):
+        # ['Browser', 'Arranger', 'Session', 'Detail', 'Detail/Clip', 'Detail/DeviceChain']
+        view = self.application().view
+        if view.is_view_visible('Browser'):
+            view.hide_view('Browser')
+            if view.focused_document_view == 'Session':
+                view.focus_view('Session')
+            else:                
+                view.focus_view('Arranger')
+        else:
+            view.show_view('Browser')
+            view.focus_view('Browser')
+
+
+    def toggle_focus_view(self, focus_browser=True):
+        # ['Browser', 'Arranger', 'Session', 'Detail', 'Detail/Clip', 'Detail/DeviceChain']
+        view = self.application().view
+        if focus_browser:
+            view.show_view('Browser')
+            view.focus_view('Browser')
+        else:
+            if view.focused_document_view == 'Session':
+                view.focus_view('Session')
+            else:                
+                view.focus_view('Arranger')
+
